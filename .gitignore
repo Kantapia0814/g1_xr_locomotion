@@ -1,0 +1,54 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# ===== IDE =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ===== OS =====
+.DS_Store
+__MACOSX/
+Thumbs.db
+
+# ===== Certificates & Keys (security) =====
+*.pem
+*.key
+*.csr
+*.srl
+
+# ===== Media & Data =====
+*.mp4
+*.webm
+*.svo
+*.pkl
+episode_0*/
+teleop/data/
+teleop/utils/data/
+
+# ===== unitree_sim_isaaclab (cloned by setup.sh, not committed) =====
+unitree_sim_isaaclab/
+
+# ===== GR00T-WholeBodyControl: exclude large/unnecessary directories =====
+GR00T-WholeBodyControl/gr00t_wbc/control/teleop/device/
+GR00T-WholeBodyControl/gr00t_wbc/sim2mujoco/
+GR00T-WholeBodyControl/gr00t_wbc/dexmg/
+GR00T-WholeBodyControl/docker/
+GR00T-WholeBodyControl/tests/
+GR00T-WholeBodyControl/scripts/
+
+# ===== xr_teleoperate: exclude images =====
+xr_teleoperate/img/
+
+# ===== Debug logs =====
+debug_logs/
+*.csv
