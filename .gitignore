@@ -35,8 +35,7 @@ episode_0*/
 teleop/data/
 teleop/utils/data/
 
-# ===== unitree_sim_isaaclab (cloned by setup.sh at repo root, not committed) =====
-# Leading / = only at repo root; patches/unitree_sim_isaaclab/ stays tracked
+# ===== unitree_sim_isaaclab (cloned by setup.sh, not committed) =====
 /unitree_sim_isaaclab/
 
 # ===== GR00T-WholeBodyControl: exclude large/unnecessary directories =====
