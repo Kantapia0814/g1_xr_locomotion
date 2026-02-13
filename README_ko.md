@@ -105,7 +105,7 @@ cd g1_xr_locomotion
 
 ### 3.2 셋업 스크립트 실행
 
-셋업 스크립트가 `unitree_sim_isaaclab`을 클론하고 통합 패치를 적용합니다:
+셋업 스크립트가 [우리의 Fork](https://github.com/Kantapia0814/unitree_sim_isaaclab)에서 `unitree_sim_isaaclab`을 클론하고 (통합 수정사항이 이미 포함됨), conda 환경을 생성합니다:
 
 ```bash
 chmod +x setup.sh
@@ -116,14 +116,21 @@ chmod +x setup.sh
 
 ### 3.3 Conda 환경 생성 및 패키지 설치
 
+`setup.sh` 스크립트가 `envs/*.yml` 파일에서 자동으로 conda 환경을 생성합니다. 수동으로 생성하려면:
+
+```bash
+conda env create -f envs/unitree_sim_env.yml
+conda env create -f envs/gr00t_wbc_env.yml
+conda env create -f envs/tv.yml
+```
+
+환경 생성 후, editable 패키지를 설치합니다:
+
 #### 환경 1: Isaac Sim (`unitree_sim_env`)
 
 ```bash
-# 환경 생성 (Isaac Lab 설치는 unitree_sim_isaaclab README 참조)
-conda create -n unitree_sim_env python=3.10
 conda activate unitree_sim_env
 # Isaac Lab 먼저 설치 (unitree_sim_isaaclab README 참조)
-# 그 다음 unitree_sdk2_python 설치:
 cd unitree_sdk2_python
 pip install -e .
 ```
@@ -131,7 +138,6 @@ pip install -e .
 #### 환경 2: GR00T-WBC (`gr00t_wbc_env`)
 
 ```bash
-conda create -n gr00t_wbc_env python=3.10
 conda activate gr00t_wbc_env
 cd GR00T-WholeBodyControl
 pip install -e .
@@ -142,10 +148,8 @@ pip install -e .
 #### 환경 3: xr_teleoperate (`tv`)
 
 ```bash
-conda create -n tv python=3.10 pinocchio=3.1.0 numpy=1.26.4 -c conda-forge
 conda activate tv
 
-# 서브모듈 설치
 cd xr_teleoperate/teleop/teleimager
 pip install -e . --no-deps
 
@@ -347,7 +351,7 @@ Isaac Sim은 `rt/lowcmd`를 수신하고 내부적으로 임피던스 제어 토
 torque = tau + kp * (q_target - q_current) + kd * (dq_target - dq_current)
 ```
 
-**Isaac Sim 추가 수정사항** (`patches/unitree_sim_isaaclab/`):
+**Isaac Sim 추가 수정사항** ([우리의 Fork](https://github.com/Kantapia0814/unitree_sim_isaaclab)):
 - `action_provider_wh_dds.py`: MuJoCo 액추에이터 모델에 맞는 전신 토크 제어 모드
 - `odo_imu_dds.py`: `rt/odostate` 및 `rt/secondary_imu`용 새 DDS 퍼블리셔
 - `g1_29dof_state.py`: GR00T-WBC용 floating-base odometry 및 torso IMU 발행
@@ -393,8 +397,13 @@ g1_xr_locomotion/
 │
 ├── README.md                       # 영어 버전
 ├── README_ko.md                    # 한국어 버전 (이 파일)
-├── setup.sh                        # 자동 셋업 (isaaclab 클론 및 패치 적용)
+├── setup.sh                        # 자동 셋업 (Fork 클론, conda 환경 생성)
 ├── .gitignore
+│
+├── envs/                           # Conda 환경 내보내기 파일
+│   ├── unitree_sim_env.yml         # Isaac Sim 환경
+│   ├── gr00t_wbc_env.yml           # GR00T-WBC 환경
+│   └── tv.yml                      # xr_teleoperate 환경
 │
 ├── xr_teleoperate/                 # XR을 통한 상체 제어 (수정됨)
 │   ├── assets/                     # 로봇 URDF 파일
@@ -422,19 +431,8 @@ g1_xr_locomotion/
 │       └── unitree_hg/msg/dds_/
 │           └── _OdoState_.py       # 신규: OdoState IDL 데이터클래스
 │
-└── patches/
-    └── unitree_sim_isaaclab/       # Isaac Sim 패치 (setup.sh가 적용)
-        ├── sim_main.py             # (수정: --enable_fullbody_dds 플래그)
-        ├── action_provider/
-        │   ├── action_provider_wh_dds.py  # (수정: 토크 제어 모드)
-        │   └── action_provider_dds.py     # (수정: 전신 관절 매핑)
-        ├── dds/
-        │   ├── odo_imu_dds.py      # 신규: OdoState + SecondaryIMU 퍼블리셔
-        │   ├── dds_create.py       # (수정: OdoImuDDS 등록)
-        │   ├── dds_master.py       # (수정: wlo1 인터페이스 바인딩)
-        │   └── g1_robot_dds.py     # (수정: IMU 쿼터니언 컨벤션)
-        ├── robots/unitree.py       # (수정: MuJoCo에 맞춘 effort 제한)
-        └── tasks/                  # (수정 + 신규: MinimalGround wholebody 태스크)
+└── unitree_sim_isaaclab/           # setup.sh가 Fork에서 클론
+                                    # (https://github.com/Kantapia0814/unitree_sim_isaaclab)
 ```
 
 ---

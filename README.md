@@ -105,7 +105,7 @@ cd g1_xr_locomotion
 
 ### 3.2 Run the setup script
 
-The setup script clones `unitree_sim_isaaclab` and applies our integration patches:
+The setup script clones `unitree_sim_isaaclab` from [our fork](https://github.com/Kantapia0814/unitree_sim_isaaclab) (all integration patches are pre-applied) and creates conda environments:
 
 ```bash
 chmod +x setup.sh
@@ -116,14 +116,21 @@ chmod +x setup.sh
 
 ### 3.3 Create conda environments and install packages
 
+The `setup.sh` script automatically creates conda environments from the exported `envs/*.yml` files. If you need to create them manually:
+
+```bash
+conda env create -f envs/unitree_sim_env.yml
+conda env create -f envs/gr00t_wbc_env.yml
+conda env create -f envs/tv.yml
+```
+
+After environment creation, install editable packages:
+
 #### Environment 1: Isaac Sim (`unitree_sim_env`)
 
 ```bash
-# Create environment (follow unitree_sim_isaaclab README for Isaac Lab setup)
-conda create -n unitree_sim_env python=3.10
 conda activate unitree_sim_env
 # Install Isaac Lab first (see unitree_sim_isaaclab README)
-# Then install unitree_sdk2_python:
 cd unitree_sdk2_python
 pip install -e .
 ```
@@ -131,7 +138,6 @@ pip install -e .
 #### Environment 2: GR00T-WBC (`gr00t_wbc_env`)
 
 ```bash
-conda create -n gr00t_wbc_env python=3.10
 conda activate gr00t_wbc_env
 cd GR00T-WholeBodyControl
 pip install -e .
@@ -142,10 +148,8 @@ pip install -e .
 #### Environment 3: xr_teleoperate (`tv`)
 
 ```bash
-conda create -n tv python=3.10 pinocchio=3.1.0 numpy=1.26.4 -c conda-forge
 conda activate tv
 
-# Install submodules
 cd xr_teleoperate/teleop/teleimager
 pip install -e . --no-deps
 
@@ -347,7 +351,7 @@ Isaac Sim receives `rt/lowcmd` and computes impedance-control torques internally
 torque = tau + kp * (q_target - q_current) + kd * (dq_target - dq_current)
 ```
 
-**Additional Isaac Sim modifications** (in `patches/unitree_sim_isaaclab/`):
+**Additional Isaac Sim modifications** (in [our fork](https://github.com/Kantapia0814/unitree_sim_isaaclab)):
 - `action_provider_wh_dds.py`: Full-body torque control mode matching MuJoCo's actuator model
 - `odo_imu_dds.py`: New DDS publisher for `rt/odostate` and `rt/secondary_imu`
 - `g1_29dof_state.py`: Publishes floating-base odometry and torso IMU for GR00T-WBC
@@ -393,8 +397,13 @@ g1_xr_locomotion/
 │
 ├── README.md                       # This file
 ├── README_ko.md                    # Korean version
-├── setup.sh                        # Automated setup (clones isaaclab, applies patches)
+├── setup.sh                        # Automated setup (clones fork, creates conda envs)
 ├── .gitignore
+│
+├── envs/                           # Conda environment exports
+│   ├── unitree_sim_env.yml         # Isaac Sim environment
+│   ├── gr00t_wbc_env.yml           # GR00T-WBC environment
+│   └── tv.yml                      # xr_teleoperate environment
 │
 ├── xr_teleoperate/                 # Upper body control via XR (modified)
 │   ├── assets/                     # Robot URDF files
@@ -422,19 +431,8 @@ g1_xr_locomotion/
 │       └── unitree_hg/msg/dds_/
 │           └── _OdoState_.py       # NEW: OdoState IDL dataclass
 │
-└── patches/
-    └── unitree_sim_isaaclab/       # Patches for Isaac Sim (applied by setup.sh)
-        ├── sim_main.py             # (modified: --enable_fullbody_dds flag)
-        ├── action_provider/
-        │   ├── action_provider_wh_dds.py  # (modified: torque control mode)
-        │   └── action_provider_dds.py     # (modified: fullbody joint mapping)
-        ├── dds/
-        │   ├── odo_imu_dds.py      # NEW: OdoState + SecondaryIMU publisher
-        │   ├── dds_create.py       # (modified: register OdoImuDDS)
-        │   ├── dds_master.py       # (modified: bind to wlo1 interface)
-        │   └── g1_robot_dds.py     # (modified: IMU quaternion convention)
-        ├── robots/unitree.py       # (modified: effort limits aligned to MuJoCo)
-        └── tasks/                  # (modified + new: MinimalGround wholebody task)
+└── unitree_sim_isaaclab/           # Cloned by setup.sh from our fork
+                                    # (https://github.com/Kantapia0814/unitree_sim_isaaclab)
 ```
 
 ---
