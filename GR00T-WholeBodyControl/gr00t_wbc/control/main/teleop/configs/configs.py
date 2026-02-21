@@ -122,7 +122,9 @@ class BaseConfig(ArgsConfigTemplate):
     """Whether to enable onscreen rendering."""
 
     upper_body_joint_speed: float = 1000
-    """Upper body joint speed."""
+    """Upper body joint speed for InterpolationPolicy (rad/s).
+    Kept high so InterpolationPolicy acts as passthrough.
+    Real safety is handled by arm_max_delta_per_step in the control loop."""
 
     env_name: str = "default"
     """Environment name."""

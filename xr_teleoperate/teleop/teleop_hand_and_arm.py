@@ -4,8 +4,8 @@ from multiprocessing import Value, Array, Lock
 import threading
 import numpy as np
 import logging_mp
-logging_mp.basic_config(level=logging_mp.INFO)
-logger_mp = logging_mp.get_logger(__name__)
+logging_mp.basicConfig(level=logging_mp.INFO)
+logger_mp = logging_mp.getLogger(__name__)
 
 import os 
 import sys
@@ -13,7 +13,10 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
-from unitree_sdk2py.core.channel import ChannelFactoryInitialize # dds 
+from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher # dds
+from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_ as hg_LowCmd
+from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
+from unitree_sdk2py.utils.crc import CRC
 from televuer import TeleVuerWrapper
 from teleop.robot_control.robot_arm import G1_29_ArmController, G1_23_ArmController, H1_2_ArmController, H1_ArmController
 from teleop.robot_control.robot_arm_ik import G1_29_ArmIK, G1_23_ArmIK, H1_2_ArmIK, H1_ArmIK
@@ -22,6 +25,27 @@ from teleop.utils.episode_writer import EpisodeWriter
 from teleop.utils.ipc import IPC_Server
 from teleop.utils.motion_switcher import MotionSwitcher, LocoClientWrapper
 from sshkeyboard import listen_keyboard, stop_listening
+
+
+class DDSWristPosePublisher:
+    """Publishes left/right wrist 4x4 poses to rt/wrist_poses using hg_LowCmd.
+    Encoding: motor_cmd[0..15].q = left_wrist.flatten(), motor_cmd[16..31].q = right_wrist.flatten()
+    """
+    def __init__(self):
+        self._publisher = ChannelPublisher("rt/wrist_poses", hg_LowCmd)
+        self._publisher.Init()
+        self._msg = unitree_hg_msg_dds__LowCmd_()
+        self._crc = CRC()
+
+    def publish(self, left_wrist_pose, right_wrist_pose):
+        left_flat = left_wrist_pose.flatten()
+        right_flat = right_wrist_pose.flatten()
+        for i in range(16):
+            self._msg.motor_cmd[i].q = float(left_flat[i])
+        for i in range(16):
+            self._msg.motor_cmd[16 + i].q = float(right_flat[i])
+        self._msg.crc = self._crc.Crc(self._msg)
+        self._publisher.Write(self._msg)
 
 # for simulation
 from unitree_sdk2py.core.channel import ChannelPublisher
@@ -145,9 +169,16 @@ if __name__ == '__main__':
             logger_mp.info(f"Enter debug mode: {'Success' if status == 0 else 'Failed'}")
 
         # arm
-        if args.arm == "G1_29":
+        wrist_publisher = None
+        arm_ik = None
+        arm_ctrl = None
+        if args.arm == "G1_29" and args.motion:
+            # Motion mode: WBC handles IK. Only publish raw wrist poses.
+            wrist_publisher = DDSWristPosePublisher()
+            logger_mp.info("[Motion mode] Skipping arm IK/ctrl. Publishing wrist poses to rt/wrist_poses.")
+        elif args.arm == "G1_29":
             arm_ik = G1_29_ArmIK()
-            arm_ctrl = G1_29_ArmController(motion_mode=args.motion, simulation_mode=args.sim)
+            arm_ctrl = G1_29_ArmController(motion_mode=False, simulation_mode=args.sim)
         elif args.arm == "G1_23":
             arm_ik = G1_23_ArmIK()
             arm_ctrl = G1_23_ArmController(motion_mode=args.motion, simulation_mode=args.sim)
@@ -256,7 +287,8 @@ if __name__ == '__main__':
                 tv_wrapper.render_to_xr(head_img)
 
         logger_mp.info("---------------------🚀start Tracking🚀-------------------------")
-        arm_ctrl.speed_gradual_max()
+        if arm_ctrl is not None:
+            arm_ctrl.speed_gradual_max()
         # main loop. robot start to follow VR user's motion
         while not STOP:
             start_time = time.time()
@@ -321,16 +353,21 @@ if __name__ == '__main__':
                                   -tele_data.left_ctrl_thumbstickValue[0] * 0.3,
                                   -tele_data.right_ctrl_thumbstickValue[0]* 0.3)
 
-            # get current robot state data.
-            current_lr_arm_q  = arm_ctrl.get_current_dual_arm_q()
-            current_lr_arm_dq = arm_ctrl.get_current_dual_arm_dq()
+            if wrist_publisher is not None:
+                # Motion mode: publish raw wrist poses for WBC to solve IK
+                wrist_publisher.publish(tele_data.left_wrist_pose, tele_data.right_wrist_pose)
+                sol_q = np.zeros(14)
+                current_lr_arm_q = np.zeros(14)
+            else:
+                # Debug mode: solve IK locally and control arms directly
+                current_lr_arm_q  = arm_ctrl.get_current_dual_arm_q()
+                current_lr_arm_dq = arm_ctrl.get_current_dual_arm_dq()
 
-            # solve ik using motor data and wrist pose, then use ik results to control arms.
-            time_ik_start = time.time()
-            sol_q, sol_tauff  = arm_ik.solve_ik(tele_data.left_wrist_pose, tele_data.right_wrist_pose, current_lr_arm_q, current_lr_arm_dq)
-            time_ik_end = time.time()
-            logger_mp.debug(f"ik:\t{round(time_ik_end - time_ik_start, 6)}")
-            arm_ctrl.ctrl_dual_arm(sol_q, sol_tauff)
+                time_ik_start = time.time()
+                sol_q, sol_tauff  = arm_ik.solve_ik(tele_data.left_wrist_pose, tele_data.right_wrist_pose, current_lr_arm_q, current_lr_arm_dq)
+                time_ik_end = time.time()
+                logger_mp.debug(f"ik:\t{round(time_ik_end - time_ik_start, 6)}")
+                arm_ctrl.ctrl_dual_arm(sol_q, sol_tauff)
 
             # Republish hand commands from the main process.
             # The Dex3 child process computes retargeted joint positions and writes
@@ -497,7 +534,8 @@ if __name__ == '__main__':
         logger_mp.error(traceback.format_exc())
     finally:
         try:
-            arm_ctrl.ctrl_dual_arm_go_home()
+            if arm_ctrl is not None:
+                arm_ctrl.ctrl_dual_arm_go_home()
         except Exception as e:
             logger_mp.error(f"Failed to ctrl_dual_arm_go_home: {e}")
         

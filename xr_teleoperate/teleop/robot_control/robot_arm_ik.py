@@ -9,28 +9,31 @@ import os
 import sys
 import pickle
 import logging_mp
-logger_mp = logging_mp.get_logger(__name__)
+logger_mp = logging_mp.getLogger(__name__)
 parent2_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(parent2_dir)
 
 from teleop.utils.weighted_moving_filter import WeightedMovingFilter
 
 class G1_29_ArmIK:
-    def __init__(self, Unit_Test = False, Visualization = False):
+    def __init__(self, Unit_Test = False, Visualization = False, urdf_path=None, model_dir=None, cache_path=None):
         np.set_printoptions(precision=5, suppress=True, linewidth=200)
 
         self.Unit_Test = Unit_Test
         self.Visualization = Visualization
 
-        # fixed cache file path
-        self.cache_path = "g1_29_model_cache.pkl"
-
-        if not self.Unit_Test:
-            self.urdf_path = '../assets/g1/g1_body29_hand14.urdf'
-            self.model_dir = '../assets/g1/'
+        if urdf_path is not None and model_dir is not None:
+            self.urdf_path = urdf_path
+            self.model_dir = model_dir
+            self.cache_path = cache_path if cache_path is not None else "g1_29_model_cache.pkl"
         else:
-            self.urdf_path = '../../assets/g1/g1_body29_hand14.urdf'
-            self.model_dir = '../../assets/g1/'
+            self.cache_path = "g1_29_model_cache.pkl"
+            if not self.Unit_Test:
+                self.urdf_path = '../assets/g1/g1_body29_hand14.urdf'
+                self.model_dir = '../assets/g1/'
+            else:
+                self.urdf_path = '../../assets/g1/g1_body29_hand14.urdf'
+                self.model_dir = '../../assets/g1/'
 
         # Try loading cache first
         if os.path.exists(self.cache_path) and (not self.Visualization):

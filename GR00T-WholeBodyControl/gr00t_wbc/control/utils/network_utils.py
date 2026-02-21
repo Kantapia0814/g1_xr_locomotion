@@ -86,22 +86,10 @@ def resolve_interface(interface: str) -> tuple[str, str]:
             return interface, "real"
 
     if interface == "sim":
-        # Prefer a multicast-capable interface over lo for same-machine DDS communication
-        interfaces = get_network_interfaces()
-        # Look for a non-loopback interface that is UP (has an IP)
-        for iface, ip_list in interfaces.items():
-            if iface != "lo" and iface != "lo0" and ip_list:
-                # Found a multicast-capable interface (e.g., wlo1, eth0)
-                print(f"[resolve_interface] Using multicast-capable interface '{iface}' for sim mode")
-                return iface, "sim"
-        # Fallback to loopback if no other interface available
-        lo_interface = find_interface_by_ip("127.0.0.1")
-        if lo_interface:
-            # macOS uses lo0 instead of lo
-            if platform.system() == "Darwin" and lo_interface == "lo":
-                return "lo0", "sim"
-            return lo_interface, "sim"
-        return ("lo0" if platform.system() == "Darwin" else "lo"), "sim"
+        # Use loopback interface for same-machine DDS communication
+        lo_name = "lo0" if platform.system() == "Darwin" else "lo"
+        print(f"[resolve_interface] Using loopback interface '{lo_name}' for sim mode")
+        return lo_name, "sim"
 
     elif interface == "real":
         interfaces = get_network_interfaces()

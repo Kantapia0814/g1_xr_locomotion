@@ -26,7 +26,7 @@ class BodyStateProcessor:
 
             status, result = msc.CheckMode()
             print(status, result)
-            while result["name"]:
+            while result is not None and result["name"]:
                 msc.ReleaseMode()
                 status, result = msc.CheckMode()
                 print(status, result)
