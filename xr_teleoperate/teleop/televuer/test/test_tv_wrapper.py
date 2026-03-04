@@ -7,7 +7,7 @@ if project_root not in sys.path:
 import time
 from televuer import TeleVuerWrapper
 import logging_mp
-logger_mp = logging_mp.get_logger(__name__, level=logging_mp.INFO)
+logger_mp = logging_mp.getLogger(__name__)
 
 
 def run_test_tv_wrapper():

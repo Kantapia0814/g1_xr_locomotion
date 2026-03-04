@@ -17,9 +17,11 @@ This project integrates **[xr_teleoperate](https://github.com/unitreerobotics/xr
 3. [Installation](#3-installation)
 4. [Simulation Deployment](#4-simulation-deployment)
 5. [Physical Robot Deployment](#5-physical-robot-deployment)
-6. [Technical Details](#6-technical-details)
-7. [Repository Structure](#7-repository-structure)
-8. [Acknowledgements](#8-acknowledgements)
+6. [Voice Control](#6-voice-control)
+7. [Data Recording](#7-data-recording)
+8. [Technical Details](#8-technical-details)
+9. [Repository Structure](#9-repository-structure)
+10. [Acknowledgements](#10-acknowledgements)
 
 ---
 
@@ -27,49 +29,7 @@ This project integrates **[xr_teleoperate](https://github.com/unitreerobotics/xr
 
 The system runs as **three independent processes** communicating over DDS:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Apple Vision Pro                             │
-│                   (Hand Tracking + Head Pose)                       │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │ WebSocket / WebRTC
-                           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Process 3: xr_teleoperate  (conda: tv)                            │
-│                                                                     │
-│  ┌──────────┐  ┌──────────┐  ┌────────────┐                       │
-│  │ TeleVuer │→ │ Arm IK   │→ │ DDS Publish│──→ rt/arm_sdk         │
-│  │ (VR data)│  │ Solver   │  │            │──→ rt/dex3/left/cmd   │
-│  └──────────┘  └──────────┘  │            │──→ rt/dex3/right/cmd  │
-│                               └────────────┘                       │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-┌──────────────────────┐  ┌──────────────────────────────────────────┐
-│ Process 2: GR00T-WBC │  │  Process 1: Isaac Sim                    │
-│ (conda: gr00t_wbc)   │  │  (conda: unitree_sim_env)                │
-│                      │  │                                          │
-│ Subscribe:           │  │  Subscribes:                             │
-│  rt/arm_sdk ─────┐   │  │   rt/lowcmd ──→ Torque Control (body)   │
-│  rt/lowstate     │   │  │   rt/dex3/*  ──→ Position Control (hand) │
-│  rt/odostate     │   │  │                                          │
-│  rt/secondary_imu│   │  │  Publishes:                              │
-│                  ▼   │  │   rt/lowstate                            │
-│ ┌──────────────────┐ │  │   rt/odostate                           │
-│ │ G1GearWbcPolicy  │ │  │   rt/secondary_imu                     │
-│ │ (Balance + Walk) │ │  │                                          │
-│ │ + Interpolation  │ │  │  Camera → teleimager → Vision Pro        │
-│ │   (Arms)         │ │  │                                          │
-│ └────────┬─────────┘ │  └──────────────────────────────────────────┘
-│          │            │                   ▲
-│          ▼            │                   │
-│   rt/lowcmd ──────────┼───────────────────┘
-│   (29-DOF unified)    │
-└──────────────────────┘
-
-Keyboard (wasd): Walking commands → GR00T-WBC
-```
+![Architecture Diagram](assets/locomotion_diagram_en.png)
 
 | Process | Conda Env | Role | Controls |
 |---------|-----------|------|----------|
@@ -87,10 +47,23 @@ Keyboard (wasd): Walking commands → GR00T-WBC
 - **Router**: For connecting XR device and host PC to the same network
 
 ### Software
-- Ubuntu 20.04 or 22.04
+- Ubuntu 22.04 (recommended) or 20.04
 - [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or Anaconda
-- NVIDIA Isaac Sim 4.5.0 (via Isaac Lab)
+- NVIDIA Isaac Sim 4.5.0 (via [Isaac Lab](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html))
 - Git
+
+### Additional System Packages
+
+```bash
+# Required for real robot deployment (DDS port forwarding)
+sudo apt install socat
+
+# Required for voice control (audio pipeline)
+sudo apt install ffmpeg portaudio19-dev
+
+# Required for GR00T-WBC real robot / voice control
+# Install ROS 2 Humble: https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html
+```
 
 ---
 
@@ -143,6 +116,9 @@ cd GR00T-WholeBodyControl
 pip install -e .
 cd ../unitree_sdk2_python
 pip install -e .
+
+# Voice control dependencies (optional — only needed for --voice flag)
+pip install edge-tts faster-whisper openwakeword pyaudio transformers
 ```
 
 #### Environment 3: xr_teleoperate (`tv`)
@@ -165,14 +141,16 @@ openssl genrsa -out rootCA.key 2048
 openssl req -x509 -new -nodes -key rootCA.key -sha256 -days 365 -out rootCA.pem -subj "/CN=xr-teleoperate"
 openssl genrsa -out key.pem 2048
 openssl req -new -key key.pem -out server.csr -subj "/CN=localhost"
-# Create server_ext.cnf — replace IP.2 with your host IP
+# Create server_ext.cnf — replace IPs with your own
 cat > server_ext.cnf << 'CERTEOF'
 subjectAltName = @alt_names
 [alt_names]
 DNS.1 = localhost
 IP.1 = 192.168.123.164
-IP.2 = 192.168.123.2
+IP.2 = <YOUR_HOST_IP>
 CERTEOF
+# IP.1 = robot PC2 internal IP (192.168.123.164, fixed by Unitree)
+# IP.2 = your host PC IP on the network the XR device connects to
 openssl x509 -req -in server.csr -CA rootCA.pem -CAkey rootCA.key \
   -CAcreateserial -out cert.pem -days 365 -sha256 -extfile server_ext.cnf
 # Copy rootCA.pem to Apple Vision Pro via AirDrop and install it
@@ -291,41 +269,69 @@ python teleop_hand_and_arm.py --sim --arm=G1_29 --ee=dex3 --img-server-ip=localh
 
 ## 5. Physical Robot Deployment
 
+> **Note**: Commands below use `~/g1_xr_locomotion` as the repo path. Replace with your actual clone location.
+
 Physical deployment follows the same 3-process architecture with these differences:
 
 ### 5.1 Image Service (on Robot PC2)
 
+SSH into the robot's Development Computing Unit (PC2) and start the image server:
+
 ```bash
-# On the robot's Development Computing Unit (PC2)
-# Install and configure teleimager: https://github.com/silencht/teleimager
+ssh unitree@192.168.123.164
+# Password: 123  →  Press Enter (skip ROS prompt)
+
+source ~/venvs/teleimager/bin/activate
 cd ~/teleimager
-python -m teleimager.image_server
+teleimager-server --rs
 ```
 
-### 5.2 Launch
+> **Note**: `teleimager` comes pre-installed on the Unitree G1 Development Computing Unit (PC2). The `--rs` flag enables RealSense camera support. Use `--cf` to discover all connected cameras.
+>
+> **Camera Busy error**: If you get a "camera busy" error, open the **Unitree Explore** tablet app → Device → Service Status → stop `vidio_hub_pc4/1.0.1.1`.
+
+### 5.2 socat Port Forwarding (on Host PC)
+
+Forward the robot's DDS ports to the host PC:
+
+```bash
+sudo socat TCP-LISTEN:60001,fork TCP:192.168.123.164:60001
+sudo socat TCP-LISTEN:60000,fork TCP:192.168.123.164:60000
+```
+
+### 5.3 Launch
 
 #### Terminal 1: GR00T-WBC (on Host PC)
 
 ```bash
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+source /opt/ros/humble/setup.bash
 conda activate gr00t_wbc_env
-cd GR00T-WholeBodyControl
+cd ~/g1_xr_locomotion/GR00T-WholeBodyControl
 
 python -m gr00t_wbc.control.main.teleop.run_g1_xr_control_loop \
-  --interface=real
+  --interface real
 ```
+
+> **Arm Stability**: The GR00T-WBC control loop includes arms in its inner loop with velocity-aware damping and delta clamping. This prevents the arms from dropping or jerking when changing direction — a problem that occurs when arm commands are applied externally without feedback.
 
 #### Terminal 2: xr_teleoperate (on Host PC)
 
 ```bash
 conda activate tv
-cd xr_teleoperate/teleop
+cd ~/g1_xr_locomotion/xr_teleoperate/teleop
 
 python teleop_hand_and_arm.py \
   --arm=G1_29 \
   --ee=dex3 \
-  --motion \
-  --img-server-ip=192.168.123.164
+  --img-server-ip=<YOUR_HOST_IP> \
+  --network-interface=<YOUR_INTERFACE> \
+  --motion
 ```
+
+> **Environment-specific values** — replace before running:
+> - `<YOUR_HOST_IP>`: Your host PC's IP on the network accessible to the XR device (check with `ip addr`). Example: `192.168.1.13`
+> - `<YOUR_INTERFACE>`: Network interface connected to the robot (check with `ip -br link show`). Example: `eno3np0`
 
 > **Warning**:
 > 1. Keep a safe distance from the robot at all times.
@@ -335,9 +341,180 @@ python teleop_hand_and_arm.py \
 
 ---
 
-## 6. Technical Details
+## 6. Voice Control
 
-### 6.1 Sim-to-Sim Migration of GR00T-WBC
+Voice commands use a pipeline of **OpenWakeWord** (wake word detection) → **Faster-Whisper** (STT) → **Qwen3-0.6B** (LLM command parsing) → **edge-tts** (audio feedback on robot speaker).
+
+Say **"hey mycroft"** to activate, then speak a command in Korean or English.
+
+### 6.1 Voice Control with GR00T-WBC (XR Teleoperation Mode)
+
+Voice commands control walking while XR controls the arms simultaneously. Start the image server (Section 5.1) and xr_teleoperate (Section 5.3) as usual, then run GR00T-WBC with `--voice`:
+
+```bash
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+source /opt/ros/humble/setup.bash
+conda activate gr00t_wbc_env
+cd ~/g1_xr_locomotion/GR00T-WholeBodyControl
+
+python -m gr00t_wbc.control.main.teleop.run_g1_xr_control_loop \
+  --voice \
+  --interface real
+```
+
+**Available voice commands (GR00T-WBC mode):**
+
+| Command (Korean) | Command (English) | Action |
+|---|---|---|
+| 앞으로 걸어 | walk forward | Move forward |
+| 뒤로 가 | walk backward | Move backward |
+| 왼쪽으로 가 | walk left | Strafe left |
+| 오른쪽으로 가 | walk right | Strafe right |
+| 왼쪽으로 돌아 | turn left | Rotate left |
+| 오른쪽으로 돌아 | turn right | Rotate right |
+| 멈춰 | stop | Stop all movement |
+| 빨리 | faster | Increase walking speed |
+| 천천히 | slower | Decrease walking speed |
+| 높이 | higher | Raise body height |
+| 낮게 | lower | Lower body height |
+| 활성화 | activate | Activate WBC policy |
+| 비활성화 | deactivate | Deactivate WBC policy |
+
+### 6.2 SDK2 Standalone Voice Control (No GR00T-WBC)
+
+Controls the robot directly via Unitree SDK2 built-in motions (locomotion + arm gestures). No GR00T-WBC or Isaac Sim needed.
+
+**Prerequisite**: In the **Unitree Explore** tablet app, press "Go!" then switch modes in order: **Damping Mode → Preparation Mode → Walk (Control Waist)**.
+
+```bash
+source /opt/ros/humble/setup.bash
+conda activate gr00t_wbc_env
+cd ~/g1_xr_locomotion/xr_teleoperate
+
+python -m teleop.run_voice_sdk2 --interface <YOUR_INTERFACE>
+```
+
+> **Note**: Replace `<YOUR_INTERFACE>` with the network interface connected to the robot (check with `ip -br link show`, e.g., `eno3np0`). Say "hey mycroft" into the connected microphone — when you hear a **ding**, speak a command.
+
+**Available voice commands (SDK2 mode):**
+
+| Category | Commands |
+|---|---|
+| **Locomotion** | walk (forward/backward/left/right), turn (left/right), stop |
+| **Posture** | sit, stand up, high stand, low stand, stand to squat, balance stand |
+| **Arm Gestures** | clap, high five, hug, heart, right heart, hands up, reject, shake hand, wave, high wave, x-ray, two-hand kiss, left kiss, right kiss |
+
+**Audio feedback**: When the wake word is detected, the robot plays a **ding** sound. After parsing the command, the robot **speaks the command name** (e.g., "high wave") via its built-in speaker before executing the action.
+
+---
+
+## 7. Data Recording
+
+The GR00T-WBC control loop supports recording robot states, actions, and camera frames in **LeRobot format** for imitation learning.
+
+### 7.1 Start Recording
+
+Recording requires all 3 processes: Isaac Sim + GR00T-WBC (with `--record`) + xr_teleoperate.
+
+#### Terminal 1: Isaac Sim
+
+```bash
+conda activate unitree_sim_env
+cd unitree_sim_isaaclab
+
+python sim_main.py \
+  --task=Isaac-MinimalGround-G129-Dex3-Wholebody \
+  --enable_fullbody_dds \
+  --enable_cameras \
+  --enable_dex3_dds \
+  --device cpu \
+  --robot_type g129
+```
+
+#### Terminal 2: GR00T-WBC with Recording
+
+```bash
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+source /opt/ros/humble/setup.bash
+conda activate gr00t_wbc_env
+cd ~/g1_xr_locomotion/GR00T-WholeBodyControl
+
+# Without camera
+python -m gr00t_wbc.control.main.teleop.run_g1_xr_control_loop \
+  --record \
+  --interface sim
+
+# With camera (teleimager server must be running)
+python -m gr00t_wbc.control.main.teleop.run_g1_xr_control_loop \
+  --record \
+  --interface sim \
+  --img-server-ip 192.168.123.164 \
+  --img-server-port 55555
+
+# Custom task name (affects output folder name)
+python -m gr00t_wbc.control.main.teleop.run_g1_xr_control_loop \
+  --record \
+  --interface sim \
+  --task-name test_move_4
+```
+
+#### Terminal 3: xr_teleoperate
+
+```bash
+conda activate tv
+cd ~/g1_xr_locomotion/xr_teleoperate/teleop
+
+python teleop_hand_and_arm.py \
+  --arm=G1_29 \
+  --ee=dex3 \
+  --img-server-ip=<YOUR_HOST_IP> \
+  --network-interface=<YOUR_INTERFACE> \
+  --motion
+```
+
+### 7.2 Recording Controls
+
+| Key | Action |
+|-----|--------|
+| `c` | Start / stop recording an episode |
+| `x` | Discard current episode without saving |
+
+Data is saved to `GR00T-WholeBodyControl/outputs/{timestamp}-g1-xr-{task_name}/` in LeRobot format.
+
+**Recorded data includes**: joint states (q, dq), actions, end-effector poses, hand commands (q, kp, kd), navigation commands (vx, vy, yaw_rate), base height, body orientation (roll, pitch, yaw), and camera frames (if image server is connected).
+
+### 7.3 Replay Recorded Data
+
+Replay only requires 2 terminals (Isaac Sim + replay). No xr_teleoperate needed.
+
+#### Terminal 1: Isaac Sim (same as above)
+
+#### Terminal 2: Replay
+
+```bash
+conda activate gr00t_wbc_env
+cd ~/g1_xr_locomotion/GR00T-WholeBodyControl
+
+python -m gr00t_wbc.control.main.teleop.run_g1_xr_replay \
+  --dataset-path <dataset-path> \
+  --episode <episode-number> \
+  --interface sim
+```
+
+| Option | Description |
+|--------|-------------|
+| `--dataset-path` | Path to the LeRobot dataset directory |
+| `--episode` | Episode index to replay (default: 0) |
+| `--interface` | `sim` for Isaac Sim, `real` for real robot |
+| `--playback-speed` | Speed multiplier (default: 1.0) |
+| `--loop` | Loop the episode continuously |
+
+The replay proceeds in 3 phases: stabilization (RL balance activates), warm-up (arms interpolate to first frame), then replay (arms from data + RL balance for legs + recorded navigation commands).
+---
+
+## 8. Technical Details
+
+### 8.1 Sim-to-Sim Migration of GR00T-WBC
 
 GR00T-WholeBodyControl was originally designed to run with its own **MuJoCo** simulator. We performed a **sim-to-sim migration** — replacing MuJoCo with Isaac Sim as the physics backend while preserving the WBC policy logic.
 
@@ -358,7 +535,7 @@ torque = tau + kp * (q_target - q_current) + kd * (dq_target - dq_current)
 - `unitree.py`: Effort limits aligned with MuJoCo values (50 Nm for waist/ankle)
 - New `Isaac-MinimalGround-G129-Dex3-Wholebody` task with camera support
 
-### 6.2 DDS Communication Architecture
+### 8.2 DDS Communication Architecture
 
 All inter-process communication uses **CycloneDDS** with **Domain ID 1** (simulation mode).
 
@@ -376,7 +553,17 @@ All inter-process communication uses **CycloneDDS** with **Domain ID 1** (simula
 - **Body joints (29 DOF)**: Torque control (PD gains zeroed, torques from GR00T-WBC applied directly)
 - **Hand joints (14 DOF)**: Position control (PD gains retained, position targets from xr_teleoperate)
 
-### 6.3 Key Integration Challenges & Solutions
+### 8.3 Arm Integration in GR00T-WBC Inner Loop
+
+In the original architecture, arm commands from xr_teleoperate were applied externally. This caused the arms to drop or jerk when changing direction, because the WBC policy had no feedback on arm state.
+
+**Solution**: Arms are now integrated into the GR00T-WBC inner control loop with:
+- **Delta clamping**: Position deltas are clamped to `MAX_ARM_VELOCITY / control_frequency` (0.2 rad/step at 50Hz) to prevent sudden jumps
+- **Velocity-aware damping**: When actual joint velocity exceeds `VELOCITY_DAMPING_START` (3.0 rad/s), the commanded delta is progressively reduced to zero as it approaches `SAFETY_VELOCITY_LIMIT` (6.0 rad/s)
+
+This ensures smooth, stable arm motion during teleoperation while maintaining responsiveness.
+
+### 8.4 Key Integration Challenges & Solutions
 
 **DDS Topic Conflict Prevention**: xr_teleoperate publishes arm commands to `rt/arm_sdk` (not `rt/lowcmd`). GR00T-WBC merges them with lower-body output and publishes the unified 29-DOF command to `rt/lowcmd`.
 
@@ -390,7 +577,7 @@ All inter-process communication uses **CycloneDDS** with **Domain ID 1** (simula
 
 ---
 
-## 7. Repository Structure
+## 9. Repository Structure
 
 ```
 g1_xr_locomotion/
@@ -409,6 +596,7 @@ g1_xr_locomotion/
 │   ├── assets/                     # Robot URDF files
 │   ├── teleop/
 │   │   ├── teleop_hand_and_arm.py  # Main script (modified: DDS republish for hands)
+│   │   ├── run_voice_sdk2.py       # NEW: SDK2 standalone voice control script
 │   │   ├── robot_control/
 │   │   │   ├── robot_hand_unitree.py   # (modified: publish_from_main_process)
 │   │   │   ├── robot_arm_ik.py
@@ -417,13 +605,21 @@ g1_xr_locomotion/
 │   │   │   └── src/televuer/
 │   │   │       └── tv_wrapper.py       # (modified: head yaw compensation)
 │   │   ├── teleimager/             # Image streaming
-│   │   └── utils/                  # Recording, filtering, visualization
+│   │   └── utils/
+│   │       ├── sdk2_voice_controller.py  # NEW: SDK2 voice controller
+│   │       ├── sdk2_command_schema.py    # NEW: SDK2 LLM prompt + parsing
+│   │       └── ...                       # Recording, filtering, visualization
 │   └── requirements.txt
 │
 ├── GR00T-WholeBodyControl/         # Lower body locomotion (modified)
 │   └── gr00t_wbc/
-│       └── control/main/teleop/
-│           └── run_g1_xr_control_loop.py   # NEW: XR control loop for Isaac Sim
+│       └── control/
+│           ├── main/teleop/
+│           │   ├── run_g1_xr_control_loop.py   # NEW: XR control loop (voice + record)
+│           │   └── run_g1_xr_replay.py         # NEW: LeRobot dataset replay
+│           └── utils/
+│               ├── voice_controller.py         # NEW: GR00T-WBC voice controller
+│               └── text_to_speech.py           # NEW: TTS utility
 │
 ├── unitree_sdk2_python/            # DDS communication library (modified)
 │   └── unitree_sdk2py/idl/
@@ -437,7 +633,7 @@ g1_xr_locomotion/
 
 ---
 
-## 8. Acknowledgements
+## 10. Acknowledgements
 
 This project builds upon the following open-source projects:
 

@@ -136,6 +136,11 @@ def get_dataset_features(robot_model: RobotModel, add_stereo_camera: bool = Fals
             "shape": (1,),
             "names": "base_height_command",
         },
+        "teleop.body_orientation_command": {
+            "dtype": "float64",
+            "shape": (3,),
+            "names": ["roll_cmd", "pitch_cmd", "yaw_cmd"],
+        },
     }
     if add_stereo_camera:
         dataset_features.update(

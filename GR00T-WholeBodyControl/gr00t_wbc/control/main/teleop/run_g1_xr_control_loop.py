@@ -27,7 +27,9 @@ Hand control is handled separately by xr_teleoperate → Isaac Sim.
 """
 
 from copy import deepcopy
+from datetime import datetime
 import os
+from pathlib import Path
 import signal
 import sys
 import time
@@ -37,7 +39,10 @@ import numpy as np
 import tyro
 
 from unitree_sdk2py.core.channel import ChannelSubscriber
-from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_ as hg_LowCmd
+from unitree_sdk2py.idl.unitree_hg.msg.dds_ import (
+    HandCmd_,
+    LowCmd_ as hg_LowCmd,
+)
 
 # Add xr_teleoperate to path for IK solver import
 _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -62,6 +67,7 @@ from gr00t_wbc.control.robot_model.instantiation.g1 import (
 from gr00t_wbc.control.utils.keyboard_dispatcher import (
     KeyboardDispatcher,
     KeyboardEStop,
+    KeyboardListener,
 )
 from gr00t_wbc.control.utils.telemetry import Telemetry
 
@@ -128,6 +134,268 @@ class DDSWristSubscriber:
             return None, None
 
 
+HAND_NUM_DOF = 7  # per hand
+
+
+class DDSHandCmdSubscriber:
+    """
+    Subscribes to rt/dex3/left/cmd and rt/dex3/right/cmd to capture
+    hand commands sent by xr_teleoperate directly to the robot.
+    """
+
+    def __init__(self):
+        self._left_sub = ChannelSubscriber("rt/dex3/left/cmd", HandCmd_)
+        self._left_sub.Init(None, 0)
+        self._right_sub = ChannelSubscriber("rt/dex3/right/cmd", HandCmd_)
+        self._right_sub.Init(None, 0)
+        self._lock = threading.Lock()
+        self._left_cmd = None  # dict with q, kp, kd arrays
+        self._right_cmd = None
+
+        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread.start()
+
+    def _read_loop(self):
+        while True:
+            left_msg = self._left_sub.Read()
+            right_msg = self._right_sub.Read()
+            with self._lock:
+                if left_msg is not None:
+                    self._left_cmd = {
+                        "q": np.array([left_msg.motor_cmd[i].q for i in range(HAND_NUM_DOF)]),
+                        "kp": np.array([left_msg.motor_cmd[i].kp for i in range(HAND_NUM_DOF)]),
+                        "kd": np.array([left_msg.motor_cmd[i].kd for i in range(HAND_NUM_DOF)]),
+                    }
+                if right_msg is not None:
+                    self._right_cmd = {
+                        "q": np.array([right_msg.motor_cmd[i].q for i in range(HAND_NUM_DOF)]),
+                        "kp": np.array([right_msg.motor_cmd[i].kp for i in range(HAND_NUM_DOF)]),
+                        "kd": np.array([right_msg.motor_cmd[i].kd for i in range(HAND_NUM_DOF)]),
+                    }
+            time.sleep(0.002)
+
+    def get_hand_commands(self):
+        """Returns (left_cmd_dict, right_cmd_dict) or (None, None)."""
+        with self._lock:
+            if self._left_cmd is not None and self._right_cmd is not None:
+                return (
+                    {k: v.copy() for k, v in self._left_cmd.items()},
+                    {k: v.copy() for k, v in self._right_cmd.items()},
+                )
+            return None, None
+
+
+# ---------------------------------------------------------------------------
+# Camera image subscriber (lightweight ZMQ, no teleimager dependency)
+# ---------------------------------------------------------------------------
+
+class ZMQCameraSubscriber:
+    """Subscribe to teleimager's ZMQ stream for head camera JPEG frames.
+
+    Connects to tcp://{host}:{port}, receives JPEG bytes, decodes to RGB numpy.
+    """
+
+    def __init__(self, host: str, port: int):
+        import zmq
+
+        self._ctx = zmq.Context()
+        self._sock = self._ctx.socket(zmq.SUB)
+        self._sock.setsockopt(zmq.RCVHWM, 1)
+        self._sock.setsockopt(zmq.LINGER, 0)
+        self._sock.connect(f"tcp://{host}:{port}")
+        self._sock.setsockopt_string(zmq.SUBSCRIBE, "")
+        self._poller = zmq.Poller()
+        self._poller.register(self._sock, zmq.POLLIN)
+
+        self._lock = threading.Lock()
+        self._latest_frame = None  # RGB uint8 numpy array
+        self._running = True
+
+        self._thread = threading.Thread(target=self._recv_loop, daemon=True)
+        self._thread.start()
+        print(f"[Camera] ZMQ subscriber connecting to tcp://{host}:{port}")
+
+    def _recv_loop(self):
+        import cv2
+
+        while self._running:
+            try:
+                events = dict(self._poller.poll(timeout=100))
+                if self._sock in events:
+                    jpg_bytes = self._sock.recv()
+                    np_buf = np.frombuffer(jpg_bytes, dtype=np.uint8)
+                    bgr = cv2.imdecode(np_buf, cv2.IMREAD_COLOR)
+                    if bgr is not None:
+                        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                        with self._lock:
+                            self._latest_frame = rgb
+            except Exception:
+                if self._running:
+                    time.sleep(0.01)
+
+    def get_frame(self):
+        """Returns latest RGB frame (H, W, 3) or None."""
+        with self._lock:
+            if self._latest_frame is not None:
+                return self._latest_frame.copy()
+            return None
+
+    def close(self):
+        self._running = False
+        self._thread.join(timeout=1.0)
+        self._sock.close()
+        self._ctx.term()
+
+
+# ---------------------------------------------------------------------------
+# Data recording helpers
+# ---------------------------------------------------------------------------
+
+def _wrist_4x4_to_eef(left_wrist_4x4, right_wrist_4x4):
+    """Convert two 4x4 wrist poses to 14D eef vector (pos3+quat4 per hand)."""
+    from scipy.spatial.transform import Rotation
+
+    def mat_to_pos_quat(mat):
+        pos = mat[:3, 3]
+        quat = Rotation.from_matrix(mat[:3, :3]).as_quat()  # x,y,z,w
+        # LeRobot convention: w,x,y,z
+        quat = np.array([quat[3], quat[0], quat[1], quat[2]])
+        return np.concatenate([pos, quat])
+
+    left_pq = mat_to_pos_quat(left_wrist_4x4)
+    right_pq = mat_to_pos_quat(right_wrist_4x4)
+    return np.concatenate([left_pq, right_pq]).astype(np.float64)
+
+
+def create_xr_data_exporter(config, robot_model, has_camera=False):
+    """Create Gr00tDataExporter for XR teleoperation data collection."""
+    from gr00t_wbc.data.exporter import Gr00tDataExporter
+    from gr00t_wbc.data.utils import get_dataset_features, get_modality_config
+
+    if config.record_save_path:
+        save_path = Path(config.record_save_path)
+    else:
+        save_path = Path(
+            f"./outputs/{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}-g1-xr-{config.task_name}/"
+        )
+
+    features = get_dataset_features(robot_model)
+
+    # Remove image/video features if no camera is available
+    if not has_camera:
+        features.pop("observation.images.ego_view", None)
+
+    # Remove img_state_delta (not applicable for XR teleop)
+    features.pop("observation.img_state_delta", None)
+
+    # Add hand command features (kp, kd, target_q per hand)
+    for side in ["left", "right"]:
+        for field in ["q", "kp", "kd"]:
+            features[f"observation.hand_cmd.{side}_{field}"] = {
+                "dtype": "float64",
+                "shape": (HAND_NUM_DOF,),
+            }
+
+    modality_config = get_modality_config(robot_model)
+
+    exporter = Gr00tDataExporter.create(
+        save_root=save_path,
+        fps=config.control_frequency,
+        features=features,
+        modality_config=modality_config,
+        task=config.task_name,
+        robot_type="g1_29dof",
+        vcodec="libx264",
+    )
+    print(f"[Recording] Data exporter created at: {save_path}")
+    print(f"[Recording] Camera recording: {'enabled' if has_camera else 'disabled'}")
+    return exporter
+
+
+def generate_xr_frame(
+    obs, wbc_action, left_wrist, right_wrist,
+    hand_cmd_sub, robot_model, camera_sub=None,
+    nav_cmd=None, height_cmd=None, body_orientation_cmd=None,
+):
+    """Generate a single data frame for recording.
+
+    Args:
+        camera_sub: Optional ZMQCameraSubscriber. If provided and a frame is
+            available, ``observation.images.ego_view`` is included.
+        nav_cmd: Current navigation command (3D: vx, vy, yaw_rate) from
+            G1GearWbcPolicy. If None, uses DEFAULT_NAV_CMD.
+        height_cmd: Current base height command from G1GearWbcPolicy.
+            If None, uses DEFAULT_BASE_HEIGHT.
+        body_orientation_cmd: Current body orientation command (3D: roll, pitch,
+            yaw) from G1GearWbcPolicy. If None, uses [0, 0, 0].
+    """
+    # Build 43-DOF action: wbc_action["q"] is already 43-DOF,
+    # but hand joints are default values — overwrite with actual hand commands
+    action_43 = np.array(wbc_action["q"], dtype=np.float64)
+
+    left_cmd, right_cmd = hand_cmd_sub.get_hand_commands()
+    if left_cmd is not None:
+        left_hand_indices = robot_model.get_joint_group_indices("left_hand")
+        right_hand_indices = robot_model.get_joint_group_indices("right_hand")
+        action_43[left_hand_indices] = left_cmd["q"]
+        action_43[right_hand_indices] = right_cmd["q"]
+
+    # Build eef from wrist 4x4 matrices
+    if left_wrist is not None:
+        eef_14 = _wrist_4x4_to_eef(left_wrist, right_wrist)
+    else:
+        eef_14 = np.zeros(14, dtype=np.float64)
+
+    if nav_cmd is None:
+        nav_cmd = DEFAULT_NAV_CMD
+    if height_cmd is None:
+        height_cmd = DEFAULT_BASE_HEIGHT
+    if body_orientation_cmd is None:
+        body_orientation_cmd = [0.0, 0.0, 0.0]
+
+    frame = {
+        "observation.state": np.array(obs["q"], dtype=np.float64),
+        "observation.eef_state": np.array(
+            obs.get("wrist_pose", eef_14), dtype=np.float64
+        ),
+        "action": action_43,
+        "action.eef": eef_14,
+        "teleop.navigate_command": np.array(nav_cmd, dtype=np.float64),
+        "teleop.base_height_command": np.array(
+            [height_cmd], dtype=np.float64
+        ),
+        "teleop.body_orientation_command": np.array(
+            body_orientation_cmd, dtype=np.float64
+        ),
+    }
+
+    # Camera image (RGB) — blank frame if no image available yet
+    if camera_sub is not None:
+        img = camera_sub.get_frame()
+        if img is None:
+            from gr00t_wbc.data.constants import RS_VIEW_CAMERA_HEIGHT, RS_VIEW_CAMERA_WIDTH
+            img = np.zeros((RS_VIEW_CAMERA_HEIGHT, RS_VIEW_CAMERA_WIDTH, 3), dtype=np.uint8)
+        frame["observation.images.ego_view"] = img
+
+    # Hand commands (kp, kd, target_q)
+    if left_cmd is not None:
+        for field in ["q", "kp", "kd"]:
+            frame[f"observation.hand_cmd.left_{field}"] = left_cmd[field].astype(
+                np.float64
+            )
+            frame[f"observation.hand_cmd.right_{field}"] = right_cmd[field].astype(
+                np.float64
+            )
+    else:
+        for side in ["left", "right"]:
+            for field in ["q", "kp", "kd"]:
+                frame[f"observation.hand_cmd.{side}_{field}"] = np.zeros(
+                    HAND_NUM_DOF, dtype=np.float64
+                )
+
+    return frame
+
+
 def main(config: ControlLoopConfig):
     # Signal handling for clean shutdown
     shutdown_event = threading.Event()
@@ -176,11 +444,76 @@ def main(config: ControlLoopConfig):
     # Keyboard dispatcher for walking commands (wasd) and safety (e-stop)
     # NOTE: We don't use KeyboardListenerPublisher since it requires ROS topic publishing
     keyboard_estop = KeyboardEStop()
+    keyboard_listener = KeyboardListener()  # for data collection keys (c, x)
     dispatcher = KeyboardDispatcher()
     dispatcher.register(env)
     dispatcher.register(wbc_policy)
     dispatcher.register(keyboard_estop)
+    dispatcher.register(keyboard_listener)
     dispatcher.start()
+
+    # Voice control setup (only when --voice is enabled)
+    voice_controller = None
+    if config.voice:
+        from gr00t_wbc.control.utils.voice_controller import VoiceController
+
+        # Initialize AudioClient for robot speaker feedback (real robot only)
+        audio_client = None
+        if config.env_type == "real":
+            try:
+                from unitree_sdk2py.g1.audio.g1_audio_client import AudioClient
+
+                audio_client = AudioClient()
+                audio_client.SetTimeout(10.0)
+                audio_client.Init()
+                audio_client.SetVolume(80)
+                print("[Voice] AudioClient initialized (robot speaker enabled).")
+            except Exception as e:
+                print(f"[Voice] AudioClient init failed, no robot speaker: {e}")
+                audio_client = None
+
+        voice_controller = VoiceController(
+            policy=wbc_policy,
+            audio_client=audio_client,
+            gpu_id=config.voice_gpu_id,
+            whisper_model=config.whisper_model,
+            qwen_model=config.qwen_model,
+            language=config.voice_language,
+        )
+        voice_controller.start()
+
+    # Data recording setup (only when --record is enabled)
+    exporter = None
+    hand_cmd_subscriber = None
+    camera_subscriber = None
+    recording = False
+    episode_count = 0
+    frame_count = 0
+    if config.record:
+        # Try to connect to camera and verify it's actually streaming
+        try:
+            camera_subscriber = ZMQCameraSubscriber(
+                config.img_server_ip, config.img_server_port
+            )
+            # Wait up to 3 seconds for an actual frame
+            print("[Recording] Checking camera connection (waiting up to 3s)...")
+            for _ in range(30):
+                if camera_subscriber.get_frame() is not None:
+                    break
+                time.sleep(0.1)
+            if camera_subscriber.get_frame() is None:
+                print("[Recording] No camera frames received, recording without video")
+                camera_subscriber.close()
+                camera_subscriber = None
+        except Exception as e:
+            print(f"[Recording] Camera unavailable ({e}), recording without video")
+            camera_subscriber = None
+
+        exporter = create_xr_data_exporter(
+            config, robot_model, has_camera=(camera_subscriber is not None)
+        )
+        hand_cmd_subscriber = DDSHandCmdSubscriber()
+        print("[Recording] Press 'c' to start/stop recording, 'x' to discard episode")
 
     # Initialize telemetry for timing measurements
     telemetry = Telemetry(window_size=100)
@@ -234,6 +567,11 @@ def main(config: ControlLoopConfig):
     print("-" * 60)
     print("  Waiting for wrist poses on rt/wrist_poses from xr_teleoperate...")
     print("  Walking control: keyboard (] activate, o deactivate, wasd direction, q/e turn)")
+    if config.voice:
+        print(f"  Voice control: ENABLED (say 'hey mycroft' to give commands)")
+        print(f"    Whisper: {config.whisper_model}, Qwen: {config.qwen_model}, GPU: {config.voice_gpu_id}")
+    else:
+        print("  Voice control: disabled (use --voice to enable)")
     print("=" * 60)
 
     loop_dt = 1.0 / config.control_frequency
@@ -340,6 +678,53 @@ def main(config: ControlLoopConfig):
                 with telemetry.timer("queue_action"):
                     env.queue_action(wbc_action)
 
+                # Data recording (only when --record is enabled)
+                if config.record:
+                    # Capture current RL policy commands (7D):
+                    #   [0:3] cmd (vx, vy, yaw_rate)
+                    #   [3]   height_cmd
+                    #   [4:7] roll_cmd, pitch_cmd, yaw_cmd
+                    lbp = wbc_policy.lower_body_policy
+                    current_policy_cmd = np.array([
+                        lbp.cmd[0], lbp.cmd[1], lbp.cmd[2],
+                        lbp.height_cmd,
+                        lbp.roll_cmd, lbp.pitch_cmd, lbp.yaw_cmd,
+                    ])
+
+                    key = keyboard_listener.pop_key()
+                    if key == "c":
+                        if not recording:
+                            recording = True
+                            frame_count = 0
+                            print(f"\n[Recording] Episode {episode_count} STARTED")
+                        else:
+                            recording = False
+                            exporter.save_episode()
+                            print(
+                                f"[Recording] Episode {episode_count} SAVED "
+                                f"({frame_count} frames)"
+                            )
+                            episode_count += 1
+                            frame_count = 0
+                    elif key == "x" and recording:
+                        recording = False
+                        exporter.skip_and_start_new_episode()
+                        print(f"[Recording] Episode {episode_count} DISCARDED")
+                        frame_count = 0
+
+                    if recording:
+                        frame = generate_xr_frame(
+                            obs, wbc_action,
+                            left_wrist, right_wrist,
+                            hand_cmd_subscriber, robot_model,
+                            camera_sub=camera_subscriber,
+                            nav_cmd=current_policy_cmd[:3],
+                            height_cmd=current_policy_cmd[3],
+                            body_orientation_cmd=current_policy_cmd[4:7],
+                        )
+                        exporter.add_frame(frame)
+                        frame_count += 1
+
             # Check simulator health (no-op since sim is None)
             if env.sim and (not env.sim.sim_thread or not env.sim.sim_thread.is_alive()):
                 raise RuntimeError("Simulator thread is not alive")
@@ -361,6 +746,10 @@ def main(config: ControlLoopConfig):
         print("\nKeyboard interrupt received")
     finally:
         print("Cleaning up...")
+        if voice_controller is not None:
+            voice_controller.close()
+        if camera_subscriber is not None:
+            camera_subscriber.close()
         dispatcher.stop()
         env.close()
 

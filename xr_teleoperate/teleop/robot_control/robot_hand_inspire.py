@@ -11,7 +11,7 @@ from inspire_sdkpy import inspire_dds  # lazy import
 import inspire_sdkpy.inspire_hand_defaut as inspire_hand_default
 
 import logging_mp
-logger_mp = logging_mp.get_logger(__name__)
+logger_mp = logging_mp.getLogger(__name__)
 
 Inspire_Num_Motors = 6
 kTopicInspireDFXCommand = "rt/inspire/cmd"

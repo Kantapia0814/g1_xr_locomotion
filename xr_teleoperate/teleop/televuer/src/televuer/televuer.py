@@ -182,7 +182,9 @@ class TeleVuer:
         except KeyboardInterrupt:
             pass
         except Exception as e:
+            import traceback
             print(f"Vuer encountered an error: {e}")
+            traceback.print_exc()
         finally:
             if hasattr(self, "stop_writer_event"):
                 self.stop_writer_event.set()

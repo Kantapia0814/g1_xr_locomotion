@@ -218,7 +218,64 @@ class BaseConfig(ArgsConfigTemplate):
 class ControlLoopConfig(BaseConfig):
     """Config for running the G1 control loop."""
 
-    pass
+    record: bool = False
+    """Enable data recording in LeRobot format."""
+
+    task_name: str = "xr_teleop"
+    """Task name for the recorded dataset."""
+
+    record_save_path: str = ""
+    """Save path for recorded data (auto-generated if empty)."""
+
+    img_server_ip: str = "192.168.123.164"
+    """IP address of the teleimager image server (robot IP)."""
+
+    img_server_port: int = 55555
+    """ZMQ port for the head camera image stream."""
+
+    # Voice control
+    voice: bool = False
+    """Enable voice control (wake word 'hey mycroft' + Whisper STT + Qwen3 LLM)."""
+
+    voice_gpu_id: int = 1
+    """GPU device index for Whisper and Qwen3 models."""
+
+    whisper_model: str = "large-v3-turbo"
+    """Faster-Whisper model size: tiny, base, small, medium, large-v3, large-v3-turbo."""
+
+    qwen_model: str = "Qwen/Qwen3-0.6B"
+    """Qwen3 model name from HuggingFace for command parsing."""
+
+    voice_language: str = "ko"
+    """Speech recognition language (ko, en, ja, etc.)."""
+
+
+@dataclass
+class ReplayConfig(BaseConfig):
+    """Config for replaying recorded LeRobot datasets in Isaac Sim."""
+
+    dataset_path: str = ""
+    """Path to the LeRobot dataset directory."""
+
+    episode: int = 0
+    """Episode index to replay."""
+
+    playback_speed: float = 1.0
+    """Playback speed multiplier (1.0 = original speed, 0.5 = half speed)."""
+
+    use_actions: bool = True
+    """If True, replay 'action' field. If False, replay 'observation.state'."""
+
+    loop: bool = False
+    """Loop the episode continuously."""
+
+    warmup_duration: float = 3.0
+    """Seconds to interpolate from current pose to first frame before replay."""
+
+    stabilize_duration: float = 3.0
+    """Seconds to run WBC with active RL balance before warm-up starts.
+    This lets the lower body balance policy stabilize after Isaac Sim's
+    RL-to-torque mode transition."""
 
 
 @dataclass

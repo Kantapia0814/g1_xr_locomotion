@@ -29,7 +29,7 @@ import numpy as np
 import yaml
 import os
 import logging_mp
-logger_mp = logging_mp.get_logger(__name__, level=logging_mp.INFO)
+logger_mp = logging_mp.getLogger(__name__)
 
 # ========================================================
 # Utility tools

@@ -5,7 +5,7 @@ channels:
 dependencies:
   - _libgcc_mutex=0.1
   - _openmp_mutex=4.5
-  - _x86_64-microarch-level=3
+
   - ampl-asl=1.0.0
   - assimp=5.4.2
   - bzip2=1.0.8
@@ -106,7 +106,7 @@ dependencies:
       - cycler==0.12.1
       - cyclonedds==0.10.2
       - decorator==5.2.1
-      - dex-retargeting==0.4.7
+
       - eigenpy==3.5.1
       - exceptiongroup==1.3.1
       - executing==2.2.1
@@ -173,8 +173,7 @@ dependencies:
       - sshkeyboard==2.3.1
       - stack-data==0.6.3
       - sympy==1.14.0
-      - teleimager==1.5.0
-      - televuer==4.0.0
+
       - termcolor==3.3.0
       - tomli==2.4.0
       - torch==2.3.0
@@ -184,10 +183,10 @@ dependencies:
       - triton==2.3.0
       - typing-extensions==4.15.0
       - u-msgpack-python==2.8.0
-      - unitree-sdk2py==1.0.1
+
       - vuer==0.0.60
       - waterbear==2.6.8
       - wcwidth==0.6.0
       - websockets==16.0
       - yarl==1.22.0
-prefix: /home/douner/miniconda3/envs/tv
+prefix: /home/sukjin/miniconda3/envs/tv
